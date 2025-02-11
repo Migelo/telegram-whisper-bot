@@ -19,6 +19,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Get Version
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=latest" >> $GITHUB_ENV
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -39,8 +48,9 @@ jobs:
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/telegram-whisper
           tags: |
-            type=semver,pattern={{version}}
-            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}},value=${{ env.VERSION }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
