@@ -7,7 +7,7 @@ import asyncio
 import mimetypes
 
 # Initialize Whisper model
-model = whisper.load_model("base")
+model = whisper.load_model(os.getenv("WHISPER_MODEL"))
 
 # Create a queue for processing audio files
 processing_queue = asyncio.Queue()
