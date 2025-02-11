@@ -6,9 +6,7 @@ in
 pkgs.mkShell {
   buildInputs = with pkgs; [
 
-    # openai-whisper-cpp
-    # Python with specific version
-    # python311
+    pre-commit
     
     # System dependencies
     ffmpeg  # Required for whisper
@@ -16,9 +14,6 @@ pkgs.mkShell {
     # Python packages
     python312Packages.python-telegram-bot
     python312Packages.openai-whisper
-    
-    # pythonPackages.pip
-    # pythonPackages.virtualenv
   ];
 
 }
