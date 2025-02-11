@@ -26,4 +26,5 @@ Vagrantfile
 
 # direnv
 .env
+.envrc
 .direnv/*
