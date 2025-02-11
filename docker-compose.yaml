@@ -1,7 +1,6 @@
 services:
   telegram-whisper:
-    image: migel0/telegram-whisper-bot
+    image: migel0/telegram-whisper
     restart: unless-stopped  
     env_file:
       - .env
-
