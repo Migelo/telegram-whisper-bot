@@ -55,6 +55,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"File size exceeds the maximum limit of 256 MB. Please send a smaller file.")
         return
     
+    # Get message duration
+    duration = 0
+    if update.message.voice:
+        duration = update.message.voice.duration
+    elif update.message.audio:
+        duration = update.message.audio.duration
+
     # Send initial processing message
     queue_size = processing_queue.qsize()
     if queue_size > 0:
@@ -62,7 +69,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Your file has been queued. There are {queue_size} files ahead of yours. Please wait..."
         )
     else:
-        processing_msg = await update.message.reply_text("Processing your audio... Please wait.")
+        processing_msg = await update.message.reply_text(f"Processing your audio. Estimated time: {duration / 60 * 13:1.0f} seconds.")
     
     # Add to queue
     await processing_queue.put((update, context, processing_msg))
