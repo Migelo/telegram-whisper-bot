@@ -12,7 +12,7 @@ pkgs.mkShell {
     ffmpeg  # Required for whisper
     
     # Python packages
-    python312Packages.python-telegram-bot
+    python312Packages.telethon
     python312Packages.openai-whisper
   ];
 
