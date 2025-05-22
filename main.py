@@ -17,9 +17,10 @@ MAX_FILE_SIZE = 256 * 1024 * 1024
 # Telegram API credentials
 api_id = os.getenv("TELEGRAM_API_ID")
 api_hash = os.getenv("TELEGRAM_API_HASH")
+bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Create the Telegram client
-client = TelegramClient('session_name', api_id, api_hash)
+client = TelegramClient('session_name', api_id, api_hash).start(bot_token=bot_token)
 
 async def start(event):
     """Send a message when the command /start is issued."""
@@ -129,7 +130,7 @@ async def process_audio(event, processing_msg):
 async def main():
     """Start the bot."""
     # Connect to Telegram
-    await client.start()
+    await client.start(bot_token=bot_token)
 
     # Add handlers
     client.add_event_handler(start, events.NewMessage(pattern='/start'))
