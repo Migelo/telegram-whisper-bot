@@ -1,147 +1,223 @@
 import os
 import tempfile
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import whisper
 import asyncio
+import logging
 import mimetypes
+from dataclasses import dataclass
 
-# Initialize Whisper model
-model = whisper.load_model(os.getenv("WHISPER_MODEL"))
+from telegram import Update, Bot
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+import whisper
 
-# Create a queue for processing audio files
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+MAX_FILE_SIZE_MB = 20 * 1024 * 1024
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+try:
+    model = whisper.load_model(WHISPER_MODEL)
+    logger.info(f"Whisper model '{WHISPER_MODEL}' loaded.")
+except Exception as e:
+    logger.error(f"Could not load Whisper model: {e}")
+    exit()
+
+
+@dataclass
+class Job:
+    chat_id: int
+    message_id: int
+    file_id: str
+    file_name: str
+    mime_type: str
+    processing_msg_id: int
+
+
 processing_queue = asyncio.Queue()
 
-# Maximum file size (256 MB in bytes)
-MAX_FILE_SIZE = 256 * 1024 * 1024
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
-    await update.message.reply_text('Hi! Send me a voice message or audio file (up to 256 MB), and I\'ll transcribe it for you.')
+    await update.message.reply_text(
+        "Hi! Send me a voice message or audio file (up to 20 MB), and I'll transcribe it for you."
+    )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
-    await update.message.reply_text('Send me any voice message or audio file (up to 256 MB), and I\'ll convert it to text using Whisper. If there are other files being processed, yours will be queued.')
+    await update.message.reply_text(
+        "Send me any voice message or audio file, and I'll convert it to text. "
+        f"I can process up to {NUM_WORKERS} files at the same time. If the queue is full, please wait."
+    )
 
-async def process_queue():
-    """Background task to process the queue."""
-    while True:
-        try:
-            # Get the next item from the queue
-            update, context, processing_msg = await processing_queue.get()
-            
-            try:
-                # Process the audio file
-                await process_audio(update, context, processing_msg)
-            except Exception as e:
-                await update.message.reply_text(f"Sorry, an error occurred: {str(e)}")
-            finally:
-                # Mark the task as done
-                processing_queue.task_done()
-        except Exception as e:
-            print(f"Error in queue processor: {str(e)}")
-            await asyncio.sleep(1)  # Prevent tight loop in case of errors
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming voice messages and audio files."""
-    # Check file size
-    file_size = 0
-    if update.message.voice:
-        file_size = update.message.voice.file_size
-    elif update.message.audio:
-        file_size = update.message.audio.file_size
-    
-    if file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"File size exceeds the maximum limit of 256 MB. Please send a smaller file.")
-        return
-    
-    # Get message duration
-    duration = 0
-    if update.message.voice:
-        duration = update.message.voice.duration
-    elif update.message.audio:
-        duration = update.message.audio.duration
+    """Handles incoming audio, adds it to the queue."""
+    message = update.effective_message
 
-    # Send initial processing message
-    queue_size = processing_queue.qsize()
-    if queue_size > 0:
-        processing_msg = await update.message.reply_text(
-            f"Your file has been queued. There are {queue_size} files ahead of yours. Please wait..."
+    if message.voice:
+        audio = message.voice
+        file_name = "voice_message.ogg"
+    elif message.audio:
+        audio = message.audio
+        file_name = (
+            audio.file_name
+            or f"audio_file_{audio.file_unique_id}.{audio.mime_type.split('/')[1]}"
         )
     else:
-        processing_msg = await update.message.reply_text(f"Processing your audio. Estimated time: {duration / 60 * 13:1.0f} seconds.")
-    
-    # Add to queue
-    await processing_queue.put((update, context, processing_msg))
+        return
 
-async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, processing_msg):
-    """Process a single audio file."""
-    try:
-        # Get the audio file
-        if update.message.voice:
-            file = await update.message.voice.get_file()
-            file_extension = '.ogg'
-        else:
-            file = await update.message.audio.get_file()
-            mime_type = update.message.audio.mime_type
-            file_extension = mimetypes.guess_extension(mime_type) or '.ogg'
-        
-        # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_audio:
-            # Print the file path
-            print(f"Downloading audio to: {temp_audio.name}")
-            # Download the voice message
-            await file.download_to_drive(temp_audio.name)
-            
-            # Transcribe the audio
-            result = model.transcribe(temp_audio.name)
-            transcription = result["text"]
-            
-        # Split transcription into chunks of 4000 characters
-        max_length = 4000
-        chunks = [transcription[i:i+max_length] 
-                 for i in range(0, len(transcription), max_length)]
-        
-        # Send each chunk as a separate message
-        for i, chunk in enumerate(chunks, 1):
-            if len(chunks) > 1:
-                header = f"Part {i}/{len(chunks)}:\n\n"
+    if audio.file_size > MAX_FILE_SIZE_MB:
+        await message.reply_text("File is too large. The limit is 256 MB.")
+        return
+
+    # Give immediate feedback that the file is queued
+    queue_size = processing_queue.qsize()
+    processing_msg = await message.reply_text(
+        f"Your file has been added to the queue. Position: {queue_size + 1}"
+    )
+
+    # Create a lightweight job object with the correctly determined filename
+    job = Job(
+        chat_id=message.chat_id,
+        message_id=message.message_id,
+        file_id=audio.file_id,
+        file_name=file_name,
+        mime_type=audio.mime_type,
+        processing_msg_id=processing_msg.message_id,
+    )
+
+    await processing_queue.put(job)
+    logger.info(
+        f"Job added to queue for chat {job.chat_id}. Queue size: {processing_queue.qsize()}"
+    )
+
+
+async def worker(name: str, bot: Bot):
+    """The worker function that processes jobs from the queue."""
+    while True:
+        try:
+            job = await processing_queue.get()
+            logger.info(f"Worker '{name}' picked up job for chat {job.chat_id}")
+
+            await bot.edit_message_text(
+                chat_id=job.chat_id,
+                message_id=job.processing_msg_id,
+                text="Downloading and processing your audio...",
+            )
+
+            file = await bot.get_file(job.file_id)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_ext = mimetypes.guess_extension(job.mime_type)
+
+                if not file_ext:
+                    file_ext = ".ogg"
+
+                temp_path = os.path.join(temp_dir, f"audio{file_ext}")
+                await file.download_to_drive(temp_path)
+
+                audio = whisper.load_audio(temp_path)
+                duration = len(audio) / 16000  # Convert samples to seconds
+                estimated_seconds = max(duration / 60 * 13, 2)
+
+                await bot.edit_message_text(
+                    chat_id=job.chat_id,
+                    message_id=job.processing_msg_id,
+                    text=f"Processing your audio. Estimated time: {estimated_seconds:1.0f} seconds.",
+                )
+
+                # --- 2. Run the blocking transcription in a separate thread ---
+                logger.info(
+                    f"Worker '{name}' starting transcription for {job.file_name}"
+                )
+                result = await asyncio.to_thread(model.transcribe, temp_path)
+                transcription = result["text"]
+                logger.info(
+                    f"Worker '{name}' finished transcription for {job.file_name}"
+                )
+
+            header = "Transcription:\n\n"
+            max_length = 4096  # Telegram's message character limit
+
+            if not transcription.strip():
+                await bot.send_message(
+                    chat_id=job.chat_id,
+                    text="The audio contained no detectable speech.",
+                    reply_to_message_id=job.message_id,
+                )
             else:
-                header = "Transcription:\n\n"
-            await update.message.reply_text(f"{header}{chunk}")
-            
-    except Exception as e:
-        raise e
-    
-    finally:
-        # Clean up the temporary file
-        if 'temp_audio' in locals():
-            os.unlink(temp_audio.name)
-        # Delete the processing message
-        await processing_msg.delete()
+                # Split into chunks and send
+                for i in range(0, len(transcription), max_length - len(header)):
+                    chunk = transcription[i : i + max_length - len(header)]
+                    await bot.send_message(
+                        chat_id=job.chat_id,
+                        text=f"{header}{chunk}",
+                        reply_to_message_id=job.message_id,
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Worker '{name}' failed on job for chat {job.chat_id}: {e}",
+                exc_info=True,
+            )
+            try:
+                # Try to notify the user about the error
+                await bot.send_message(
+                    chat_id=job.chat_id,
+                    text="Sorry, an error occurred while processing your file.",
+                    reply_to_message_id=job.message_id,
+                )
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to notify user {job.chat_id} about error: {notify_error}"
+                )
+
+        finally:
+            if "job" in locals():
+                try:
+                    await bot.delete_message(
+                        chat_id=job.chat_id, message_id=job.processing_msg_id
+                    )
+                except Exception:
+                    pass
+                processing_queue.task_done()
+
+
+async def post_init(application: Application):
+    """Create worker tasks after the application is initialized."""
+    bot = application.bot
+    for i in range(NUM_WORKERS):
+        asyncio.create_task(worker(f"Worker-{i + 1}", bot))
+    logger.info(f"Started {NUM_WORKERS} worker tasks.")
+
 
 def main():
     """Start the bot."""
-    # Create the Application
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("No API token provided. Please set the TELEGRAM_BOT_TOKEN environment variable.")
-    application = Application.builder().token(token).build()
+    if not TELEGRAM_BOT_TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set.")
 
-    # Add handlers
+    application = (
+        Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    )
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-    # Create and start the queue processor as a background task
-    async def start_queue_processor(app):
-        asyncio.create_task(process_queue())
-
-    # Add the startup action
-    application.post_init = start_queue_processor
-
-    # Run the bot
+    logger.info("Bot is starting... Press Ctrl+C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
