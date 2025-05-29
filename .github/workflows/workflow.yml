@@ -24,8 +24,8 @@ jobs:
         id: get_version
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
-            echo "DEBUG: Found version ${GITHUB_REF#refs/tags/v}"
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+            echo "DEBUG: Found version ${GITHUB_REF#refs/tags/}"
           else
             echo "VERSION=latest" >> $GITHUB_ENV
             echo "DEBUG: Found version latest"
