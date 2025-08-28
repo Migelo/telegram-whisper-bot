@@ -19,18 +19,15 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MAX_FILE_SIZE_MB = 20 * 1024 * 1024
+MAX_QUEUE_SIZE = 100
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-try:
-    model = whisper.load_model(WHISPER_MODEL)
-    logger.info(f"Whisper model '{WHISPER_MODEL}' loaded.")
-except Exception as e:
-    logger.error(f"Could not load Whisper model: {e}")
-    exit()
+# Models will be loaded per worker to avoid concurrency issues
+models = {}  # worker_name -> model instance
 
 
 @dataclass
@@ -40,6 +37,7 @@ class Job:
     file_id: str
     file_name: str
     mime_type: str
+    file_size: int
     processing_msg_id: int
 
 
@@ -81,10 +79,17 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("File is too large. The limit is 256 MB.")
         return
 
-    # Give immediate feedback that the file is queued
+    # Check if queue is full before adding
     queue_size = processing_queue.qsize()
+    if queue_size >= MAX_QUEUE_SIZE:
+        await message.reply_text(
+            f"Sorry, the processing queue is full ({MAX_QUEUE_SIZE} files). Please try again later."
+        )
+        return
+
+    # Give immediate feedback that the file is queued
     processing_msg = await message.reply_text(
-        f"Your file has been added to the queue. Position: {queue_size + 1}"
+        f"Your file has been queued for processing. Position: {queue_size + 1}"
     )
 
     # Create a lightweight job object with the correctly determined filename
@@ -94,6 +99,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id=audio.file_id,
         file_name=file_name,
         mime_type=audio.mime_type,
+        file_size=audio.file_size,
         processing_msg_id=processing_msg.message_id,
     )
 
@@ -105,17 +111,40 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def worker(name: str, bot: Bot):
     """The worker function that processes jobs from the queue."""
+    # Load a dedicated model for this worker
+    if name not in models:
+        try:
+            logger.info(f"Loading Whisper model '{WHISPER_MODEL}' for {name}")
+            models[name] = whisper.load_model(WHISPER_MODEL)
+            logger.info(f"Model loaded successfully for {name}")
+        except Exception as e:
+            logger.error(f"Could not load Whisper model for {name}: {e}")
+            return
+    
+    model = models[name]
+    
     while True:
         try:
             job = await processing_queue.get()
             logger.info(f"Worker '{name}' picked up job for chat {job.chat_id}")
 
+            # Check file size before downloading
+            if job.file_size > MAX_FILE_SIZE_MB:
+                await bot.edit_message_text(
+                    chat_id=job.chat_id,
+                    message_id=job.processing_msg_id,
+                    text="File is too large. The limit is 256 MB.",
+                )
+                continue
+
             await bot.edit_message_text(
                 chat_id=job.chat_id,
                 message_id=job.processing_msg_id,
-                text="Downloading and processing your audio...",
+                text="Downloading your audio file...",
             )
 
+            # Download file only when ready to process
+            logger.info(f"Worker '{name}' downloading file for {job.file_name}")
             file = await bot.get_file(job.file_id)
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,6 +155,13 @@ async def worker(name: str, bot: Bot):
 
                 temp_path = os.path.join(temp_dir, f"audio{file_ext}")
                 await file.download_to_drive(temp_path)
+                logger.info(f"Worker '{name}' finished downloading {job.file_name}")
+
+                await bot.edit_message_text(
+                    chat_id=job.chat_id,
+                    message_id=job.processing_msg_id,
+                    text="Analyzing audio duration...",
+                )
 
                 audio = whisper.load_audio(temp_path)
                 duration = len(audio) / 16000  # Convert samples to seconds
@@ -137,10 +173,10 @@ async def worker(name: str, bot: Bot):
                     text=f"Processing your audio. Estimated time: {estimated_seconds:1.0f} seconds.",
                 )
 
-                # --- 2. Run the blocking transcription in a separate thread ---
                 logger.info(
                     f"Worker '{name}' starting transcription for {job.file_name}"
                 )
+                # Each worker has its own model - no lock needed
                 result = await asyncio.to_thread(model.transcribe, temp_path)
                 transcription = result["text"]
                 logger.info(
@@ -172,10 +208,17 @@ async def worker(name: str, bot: Bot):
                 exc_info=True,
             )
             try:
-                # Try to notify the user about the error
+                # Determine error type for better user messaging
+                if "download" in str(e).lower() or "file" in str(e).lower():
+                    error_msg = "Sorry, failed to download your file. Please try again."
+                elif "transcribe" in str(e).lower() or "whisper" in str(e).lower():
+                    error_msg = "Sorry, failed to transcribe your audio. The file may be corrupted."
+                else:
+                    error_msg = "Sorry, an error occurred while processing your file."
+                
                 await bot.send_message(
                     chat_id=job.chat_id,
-                    text="Sorry, an error occurred while processing your file.",
+                    text=error_msg,
                     reply_to_message_id=job.message_id,
                 )
             except Exception as notify_error:

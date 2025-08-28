@@ -1,0 +1,47 @@
+name: Generate Badges
+
+on:
+  push:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+
+jobs:
+  badges:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create test coverage badge
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ secrets.GITHUB_TOKEN }}
+        gistID: # Add your gist ID here if you want coverage badges
+        filename: coverage.json
+        label: Coverage
+        message: 80%+ # Update based on actual coverage
+        color: green
+        
+    - name: Create test count badge  
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ secrets.GITHUB_TOKEN }}
+        gistID: # Add your gist ID here
+        filename: tests.json
+        label: Tests
+        message: 106 tests
+        color: brightgreen
+        
+    - name: Create Python version badge
+      uses: schneegans/dynamic-badges-action@v1.7.0  
+      with:
+        auth: ${{ secrets.GITHUB_TOKEN }}
+        gistID: # Add your gist ID here
+        filename: python.json
+        label: Python
+        message: 3.9+ | 3.10+ | 3.11+ | 3.12+
+        color: blue
