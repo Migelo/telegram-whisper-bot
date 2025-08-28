@@ -43,5 +43,5 @@ jobs:
         gistID: # Add your gist ID here
         filename: python.json
         label: Python
-        message: 3.9+ | 3.10+ | 3.11+ | 3.12+
+        message: 3.12
         color: blue

@@ -6,7 +6,10 @@ import mimetypes
 from dataclasses import dataclass
 from typing import Optional, Protocol, Any
 
-import whisper
+try:
+    import whisper
+except ImportError:
+    whisper = None
 
 
 @dataclass
@@ -59,6 +62,10 @@ class BotCore:
         
     def load_whisper_model(self):
         """Load the Whisper model."""
+        if whisper is None:
+            self.logger.error("Whisper not available - install openai-whisper package")
+            return False
+        
         try:
             self.model = whisper.load_model(self.whisper_model)
             self.logger.info(f"Whisper model '{self.whisper_model}' loaded.")
@@ -142,6 +149,9 @@ class BotCore:
                     text="Analyzing audio duration...",
                 )
 
+                if whisper is None:
+                    raise ImportError("Whisper not available - install openai-whisper package")
+                
                 audio = whisper.load_audio(temp_path)
                 duration = len(audio) / 16000  # Convert samples to seconds
                 

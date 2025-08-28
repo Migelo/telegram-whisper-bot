@@ -13,7 +13,11 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-import whisper
+
+try:
+    import whisper
+except ImportError:
+    whisper = None
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
@@ -113,6 +117,10 @@ async def worker(name: str, bot: Bot):
     """The worker function that processes jobs from the queue."""
     # Load a dedicated model for this worker
     if name not in models:
+        if whisper is None:
+            logger.error(f"Whisper not available for {name} - install openai-whisper package")
+            return
+            
         try:
             logger.info(f"Loading Whisper model '{WHISPER_MODEL}' for {name}")
             models[name] = whisper.load_model(WHISPER_MODEL)
@@ -163,6 +171,9 @@ async def worker(name: str, bot: Bot):
                     text="Analyzing audio duration...",
                 )
 
+                if whisper is None:
+                    raise ImportError("Whisper not available - install openai-whisper package")
+                    
                 audio = whisper.load_audio(temp_path)
                 duration = len(audio) / 16000  # Convert samples to seconds
                 estimated_seconds = max(duration / 60 * 13, 2)

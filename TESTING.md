@@ -85,8 +85,8 @@ The project includes comprehensive GitHub Actions workflows:
 
 ### Main Test Workflow (`.github/workflows/test.yml`)
 
-**Multi-Python Version Testing:**
-- Tests on Python 3.9, 3.10, 3.11, 3.12
+**Python 3.12 Testing:**
+- Tests on Python 3.12
 - Ubuntu latest with FFmpeg support
 - Cached dependencies for faster builds
 
@@ -97,7 +97,7 @@ The project includes comprehensive GitHub Actions workflows:
 4. **Security Scanning** - Dependency vulnerability checks
 
 **Features:**
-- ✅ Parallel execution across Python versions
+- ✅ Optimized execution on Python 3.12
 - ✅ Dependency caching for performance
 - ✅ Code coverage reporting (Codecov integration)
 - ✅ Lint and type checking (ruff, mypy)
@@ -153,7 +153,7 @@ pytest --benchmark-only
 - **Pull Requests** to `main` or `develop`
 
 ### Matrix Testing
-Tests run across Python 3.9, 3.10, 3.11, and 3.12 to ensure compatibility.
+Tests run on Python 3.12 for optimal performance and latest language features.
 
 ### Coverage Reporting
 - Coverage reports uploaded to Codecov

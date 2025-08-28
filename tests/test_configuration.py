@@ -237,8 +237,7 @@ class TestConfiguration:
         'WHISPER_MODEL': 'medium',
         'NUM_WORKERS': '6'
     })
-    @pytest.mark.asyncio
-    async def test_environment_integration_with_bot_core(self):
+    def test_environment_integration_with_bot_core(self):
         """Test integration between environment variables and BotCore."""
         import importlib
         importlib.reload(main)
@@ -262,8 +261,7 @@ class TestConfiguration:
         assert bot_core.logger.name == 'bot_core'
 
     @patch('bot_core.whisper.load_model')
-    @pytest.mark.asyncio
-    async def test_per_worker_model_configuration(self, mock_load_model):
+    def test_per_worker_model_configuration(self, mock_load_model):
         """Test that each worker can have its own model configuration."""
         mock_model = MagicMock()
         mock_load_model.return_value = mock_model
