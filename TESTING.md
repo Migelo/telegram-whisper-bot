@@ -70,13 +70,12 @@ Comprehensive audio format support testing:
 pytest tests/test_audio_formats.py -v
 ```
 
-## Testing Without Whisper
+## Subset Testing
 
-For environments where Whisper cannot be installed:
+Run only core functionality tests (faster execution):
 
 ```bash
-pip install python-telegram-bot pytest pytest-asyncio pytest-mock
-pytest tests/test_without_whisper.py tests/test_queue_management.py -v
+pytest tests/test_without_whisper.py tests/test_queue_management.py tests/test_configuration.py -v
 ```
 
 ## GitHub Actions CI/CD
@@ -91,9 +90,9 @@ The project includes comprehensive GitHub Actions workflows:
 - Cached dependencies for faster builds
 
 **Test Jobs:**
-1. **Full Test Suite** - Complete test coverage with Whisper
-2. **Minimal Tests** - Core functionality without Whisper dependencies  
-3. **Integration Tests** - End-to-end workflow validation
+1. **Full Test Suite** - Complete test coverage with all dependencies
+2. **Subset Tests** - Core functionality tests (queue, configuration, basic tests)
+3. **Integration Tests** - End-to-end workflow validation  
 4. **Security Scanning** - Dependency vulnerability checks
 
 **Features:**

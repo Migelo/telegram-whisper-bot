@@ -92,7 +92,7 @@ jobs:
         name: coverage-report
         path: htmlcov/
 
-  test-without-whisper:
+  test-subset:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
@@ -102,18 +102,24 @@ jobs:
       with:
         python-version: '3.12'
 
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
     - name: Create virtual environment
       run: |
         python -m venv .venv
         source .venv/bin/activate
         python -m pip install --upgrade pip
 
-    - name: Install minimal dependencies (without Whisper)
+    - name: Install all dependencies (including Whisper)
       run: |
         source .venv/bin/activate
-        pip install python-telegram-bot pytest pytest-asyncio pytest-mock
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-mock
 
-    - name: Run tests without Whisper dependencies
+    - name: Run subset of tests
       run: |
         source .venv/bin/activate
         python -m pytest tests/test_without_whisper.py tests/test_queue_management.py tests/test_configuration.py -v
