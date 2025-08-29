@@ -22,11 +22,11 @@ class Config:
     
     # Audio processing constants  
     AUDIO_SAMPLE_RATE = 16000
-    TRANSCRIPTION_TIME_FACTOR = 13  # seconds per minute of audio
-    MIN_AUDIO_DURATION = 0.1  # seconds
+    TRANSCRIPTION_TIME_FACTOR = 35  # seconds per minute of audio
+    MIN_AUDIO_DURATION = 1 # seconds
     
     # Default limits
-    DEFAULT_MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+    DEFAULT_MAX_FILE_SIZE = 128 * 1024 * 1024  # 128MB
     DEFAULT_MAX_QUEUE_SIZE = 100
     DEFAULT_NUM_WORKERS = 2
     DEFAULT_MAX_JOBS_PER_USER = 2

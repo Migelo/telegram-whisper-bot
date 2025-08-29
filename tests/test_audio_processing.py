@@ -218,6 +218,6 @@ class TestAudioProcessing:
                           if "Estimated time:" in str(call)]
         assert len(estimation_calls) > 0
         
-        # Should show estimated time (2 minutes * 13 seconds/minute = 26 seconds)
+        # Should show estimated time (2 minutes * 35 seconds/minute = 70 seconds)
         estimation_call = estimation_calls[0][1]['text']
-        assert "26 seconds" in estimation_call
+        assert "70 seconds" in estimation_call
