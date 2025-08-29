@@ -1,8 +1,8 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from telegram import Update, Message, Voice, Audio, Chat, User, Bot
-from telegram.ext import ContextTypes
+from telethon.tl.types import Message, Document, DocumentAttributeAudio, DocumentAttributeFilename
+from telethon import events
 import main
 
 pytestmark = pytest.mark.asyncio
@@ -12,222 +12,221 @@ class TestTelegramHandlers:
     """Test Telegram message handlers and integration."""
 
     @pytest.fixture
-    def mock_update(self):
-        """Create a mock Telegram Update object."""
-        update = MagicMock(spec=Update)
-        update.effective_message = MagicMock(spec=Message)
-        update.effective_message.chat_id = 12345
-        update.effective_message.message_id = 1
-        update.effective_message.reply_text = AsyncMock()
-        return update
-
-    @pytest.fixture
-    def mock_context(self):
-        """Create a mock Telegram context."""
-        return MagicMock(spec=ContextTypes.DEFAULT_TYPE)
-
-    @pytest.fixture
-    def mock_voice_message(self, mock_update):
-        """Create a mock voice message."""
-        voice = MagicMock(spec=Voice)
-        voice.file_id = "voice_123"
-        voice.file_size = 1024 * 1024
-        voice.mime_type = "audio/ogg"
-        voice.file_unique_id = "unique_voice_123"
+    def mock_event(self):
+        """Create a mock Telethon event object."""
+        event = MagicMock(spec=events.NewMessage.Event)
+        event.message = MagicMock(spec=Message)
+        event.message.id = 1
+        event.chat_id = 12345
+        event.respond = AsyncMock()
         
-        mock_update.effective_message.voice = voice
-        mock_update.effective_message.audio = None
-        return mock_update
+        # Add client mock for edit_message calls
+        event.client = AsyncMock()
+        event.client.edit_message = AsyncMock()
+        
+        return event
 
     @pytest.fixture
-    def mock_audio_message(self, mock_update):
-        """Create a mock audio message."""
-        audio = MagicMock(spec=Audio)
-        audio.file_id = "audio_456"
-        audio.file_size = 2 * 1024 * 1024
-        audio.mime_type = "audio/mp3"
-        audio.file_name = "song.mp3"
-        audio.file_unique_id = "unique_audio_456"
+    def mock_voice_event(self, mock_event):
+        """Create a mock voice message event."""
+        document = MagicMock(spec=Document)
+        document.id = 123
+        document.size = 1024 * 1024
+        document.mime_type = "audio/ogg"
+        document.file_name = None
         
-        mock_update.effective_message.voice = None
-        mock_update.effective_message.audio = audio
-        return mock_update
+        mock_event.message.media = MagicMock()
+        mock_event.message.media.document = document
+        return mock_event
 
-    async def test_start_command(self, mock_update, mock_context):
+    @pytest.fixture
+    def mock_audio_event(self, mock_event):
+        """Create a mock audio message event."""
+        document = MagicMock(spec=Document)
+        document.id = 456
+        document.size = 2 * 1024 * 1024
+        document.mime_type = "audio/mp3"
+        document.file_name = "song.mp3"
+        
+        mock_event.message.media = MagicMock()
+        mock_event.message.media.document = document
+        return mock_event
+
+    async def test_start_command(self, mock_event):
         """Test /start command handler."""
-        # Make reply_text async
-        mock_update.message.reply_text = AsyncMock()
+        await main.start(mock_event)
         
-        await main.start(mock_update, mock_context)
-        
-        mock_update.message.reply_text.assert_called_once_with(
-            "Hi! Send me a voice message or audio file (up to 20 MB), and I'll transcribe it for you."
+        mock_event.respond.assert_called_once_with(
+            "Hi! Send me a voice message or audio file (up to 2 GB), and I'll transcribe it for you."
         )
 
-    async def test_help_command(self, mock_update, mock_context):
+    async def test_help_command(self, mock_event):
         """Test /help command handler."""
-        # Make reply_text async
-        mock_update.message.reply_text = AsyncMock()
-        
-        await main.help_command(mock_update, mock_context)
+        await main.help_command(mock_event)
         
         expected_text = (
             "Send me any voice message or audio file, and I'll convert it to text. "
             f"I can process up to {main.NUM_WORKERS} files at the same time. If the queue is full, please wait."
         )
-        mock_update.message.reply_text.assert_called_once_with(expected_text)
+        mock_event.respond.assert_called_once_with(expected_text)
 
-    async def test_handle_voice_message(self, mock_voice_message, mock_context):
+    async def test_handle_voice_message(self, mock_voice_event):
         """Test handling of voice messages."""
-        with patch.object(main.processing_queue, 'qsize', return_value=5), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(True, None)) as mock_queue, \
+             patch.object(main.bot_core, 'get_queue_position', return_value=1):
             
-            await main.handle_audio(mock_voice_message, mock_context)
+            await main.handle_audio(mock_voice_event)
             
             # Should queue the job
-            mock_put.assert_called_once()
+            mock_queue.assert_called_once()
             
-            # Should send position feedback
-            mock_voice_message.effective_message.reply_text.assert_called_once()
-            reply_text = mock_voice_message.effective_message.reply_text.call_args[0][0]
-            assert "Position: 6" in reply_text
+            # Should send initial queueing message and then update with position
+            assert mock_voice_event.respond.call_count == 1
+            assert mock_voice_event.client.edit_message.call_count == 1
 
-    async def test_handle_audio_message(self, mock_audio_message, mock_context):
+    async def test_handle_audio_message(self, mock_audio_event):
         """Test handling of audio file messages."""
-        with patch.object(main.processing_queue, 'qsize', return_value=0), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(True, None)) as mock_queue, \
+             patch.object(main.bot_core, 'get_queue_position', return_value=1):
             
-            await main.handle_audio(mock_audio_message, mock_context)
+            await main.handle_audio(mock_audio_event)
             
             # Should queue the job
-            mock_put.assert_called_once()
-            job = mock_put.call_args[0][0]
+            mock_queue.assert_called_once()
             
-            # Verify job properties
-            assert job.chat_id == 12345
-            assert job.message_id == 1
-            assert job.file_id == "audio_456"
-            assert job.file_name == "song.mp3"
-            assert job.mime_type == "audio/mp3"
-            assert job.file_size == 2 * 1024 * 1024
+            # Should send initial queueing message and then update with position
+            assert mock_audio_event.respond.call_count == 1
+            assert mock_audio_event.client.edit_message.call_count == 1
 
-    async def test_handle_oversized_file_rejection(self, mock_audio_message, mock_context):
+    async def test_handle_oversized_file_rejection(self, mock_audio_event):
         """Test rejection of oversized files."""
         # Make the file too large
-        mock_audio_message.effective_message.audio.file_size = 30 * 1024 * 1024
+        mock_audio_event.message.media.document.size = 3 * 1024 * 1024 * 1024  # 3GB
         
-        with patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
-            await main.handle_audio(mock_audio_message, mock_context)
+        with patch.object(main.bot_core, 'queue_audio_job', new_callable=AsyncMock) as mock_queue:
+            await main.handle_audio(mock_audio_event)
             
             # Should not queue the job
-            mock_put.assert_not_called()
+            mock_queue.assert_not_called()
             
             # Should send rejection message
-            mock_audio_message.effective_message.reply_text.assert_called_once_with(
-                "File is too large. The limit is 256 MB."
+            mock_audio_event.respond.assert_called_once_with(
+                "File is too large. The limit is 2 GB."
             )
 
-    async def test_handle_queue_full_rejection(self, mock_voice_message, mock_context):
+    async def test_handle_queue_full_rejection(self, mock_voice_event):
         """Test rejection when queue is full."""
-        with patch.object(main.processing_queue, 'qsize', return_value=main.MAX_QUEUE_SIZE), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
+        queue_full_error = f"Sorry, the processing queue is full ({main.MAX_QUEUE_SIZE} files). Please try again later."
+        
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(False, queue_full_error)) as mock_queue:
             
-            await main.handle_audio(mock_voice_message, mock_context)
+            # Mock the processing message
+            mock_voice_event.respond.return_value.id = 999
             
-            # Should not queue the job
-            mock_put.assert_not_called()
+            await main.handle_audio(mock_voice_event)
             
-            # Should send queue full message
-            mock_voice_message.effective_message.reply_text.assert_called_once()
-            reply_text = mock_voice_message.effective_message.reply_text.call_args[0][0]
-            assert "queue is full" in reply_text.lower()
-            assert str(main.MAX_QUEUE_SIZE) in reply_text
+            # Should attempt to queue the job
+            mock_queue.assert_called_once()
+            
+            # Should send queueing message then edit with error
+            mock_voice_event.respond.assert_called_once()
+            mock_voice_event.client.edit_message.assert_called_once()
 
-    async def test_handle_voice_filename_generation(self, mock_voice_message, mock_context):
+    async def test_handle_voice_filename_generation(self, mock_voice_event):
         """Test filename generation for voice messages."""
-        with patch.object(main.processing_queue, 'qsize', return_value=0), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(True, None)) as mock_queue, \
+             patch.object(main.bot_core, 'get_queue_position', return_value=1):
             
-            await main.handle_audio(mock_voice_message, mock_context)
+            await main.handle_audio(mock_voice_event)
             
-            job = mock_put.call_args[0][0]
-            assert job.file_name == "voice_message.ogg"
+            # Should queue the job
+            mock_queue.assert_called_once()
+            
+            # Check that the audio message was created with correct filename
+            call_args = mock_queue.call_args
+            audio_message = call_args[1]['audio']
+            assert audio_message.file_name == "audio_123.ogg"
 
-    async def test_handle_audio_without_filename(self, mock_audio_message, mock_context):
+    async def test_handle_audio_without_filename(self, mock_audio_event):
         """Test filename generation for audio without filename."""
         # Remove filename
-        mock_audio_message.effective_message.audio.file_name = None
+        mock_audio_event.message.media.document.file_name = None
         
-        with patch.object(main.processing_queue, 'qsize', return_value=0), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(True, None)) as mock_queue, \
+             patch.object(main.bot_core, 'get_queue_position', return_value=1):
             
-            await main.handle_audio(mock_audio_message, mock_context)
+            await main.handle_audio(mock_audio_event)
             
-            job = mock_put.call_args[0][0]
-            assert job.file_name == "audio_file_unique_audio_456.mp3"
+            # Should queue the job
+            mock_queue.assert_called_once()
+            
+            # Check that the audio message was created with correct filename
+            call_args = mock_queue.call_args
+            audio_message = call_args[1]['audio']
+            assert audio_message.file_name == "audio_456.mp3"
 
-    async def test_handle_neither_voice_nor_audio(self, mock_update, mock_context):
+    async def test_handle_neither_voice_nor_audio(self, mock_event):
         """Test handling of messages that are neither voice nor audio."""
-        # Set both voice and audio to None
-        mock_update.effective_message.voice = None
-        mock_update.effective_message.audio = None
+        # Set media to None
+        mock_event.message.media = None
         
-        with patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put:
-            await main.handle_audio(mock_update, mock_context)
+        with patch.object(main.bot_core, 'queue_audio_job', new_callable=AsyncMock) as mock_queue:
+            await main.handle_audio(mock_event)
             
             # Should not queue anything or send messages
-            mock_put.assert_not_called()
-            mock_update.effective_message.reply_text.assert_not_called()
+            mock_queue.assert_not_called()
+            mock_event.respond.assert_not_called()
 
-    @patch('main.whisper.load_model')
-    async def test_worker_model_loading(self, mock_load_model):
+    async def test_worker_model_loading(self):
         """Test that workers load their own Whisper models."""
-        mock_model = MagicMock()
-        mock_load_model.return_value = mock_model
-        mock_bot = AsyncMock(spec=Bot)
+        from telethon import TelegramClient
         
-        # Clear any existing models
-        main.models.clear()
-        
-        with patch.object(main.processing_queue, 'get', new_callable=AsyncMock) as mock_get:
-            # Make get() raise an exception to exit the worker loop
-            mock_get.side_effect = Exception("Exit worker loop")
+        with patch('main.whisper') as mock_whisper:
+            mock_model = MagicMock()
+            mock_whisper.load_model.return_value = mock_model
+            mock_client = AsyncMock(spec=TelegramClient)
             
-            try:
-                await main.worker("TestWorker", mock_bot)
-            except Exception:
-                pass  # Expected exit
-            
-            # Verify model was loaded for this worker
-            mock_load_model.assert_called_once_with(main.WHISPER_MODEL)
-            assert "TestWorker" in main.models
-            assert main.models["TestWorker"] == mock_model
+            # Mock bot_core.get_worker_model to return our mock model
+            with patch.object(main.bot_core, 'get_worker_model', return_value=mock_model) as mock_get_model, \
+                 patch.object(main.bot_core.processing_queue, 'get', new_callable=AsyncMock) as mock_get:
+                # Make get() raise an exception to exit the worker loop immediately
+                mock_get.side_effect = asyncio.CancelledError("Exit worker loop")
+                
+                with pytest.raises(asyncio.CancelledError):
+                    await main.worker("TestWorker", mock_client)
+                
+                # Verify model was requested for this worker
+                mock_get_model.assert_called_once_with("TestWorker")
 
-    @patch('main.whisper.load_model')
-    async def test_worker_model_loading_failure(self, mock_load_model):
+    async def test_worker_model_loading_failure(self):
         """Test worker behavior when model loading fails."""
-        mock_load_model.side_effect = Exception("Model loading failed")
-        mock_bot = AsyncMock(spec=Bot)
+        from telethon import TelegramClient
         
-        # Clear any existing models
-        main.models.clear()
-        
-        # Worker should exit when model loading fails
-        result = await main.worker("FailWorker", mock_bot)
-        
-        # Should attempt to load model
-        mock_load_model.assert_called_once_with(main.WHISPER_MODEL)
-        # Should not create model entry
-        assert "FailWorker" not in main.models
+        with patch('main.whisper') as mock_whisper:
+            mock_whisper.load_model.side_effect = Exception("Model loading failed")
+            mock_client = AsyncMock(spec=TelegramClient)
+            
+            # Mock bot_core.get_worker_model to return None (failure)
+            with patch.object(main.bot_core, 'get_worker_model', return_value=None) as mock_get_model:
+                # Worker should exit when model loading fails
+                result = await main.worker("FailWorker", mock_client)
+                
+                # Should attempt to get model for this worker
+                mock_get_model.assert_called_once_with("FailWorker")
 
-    async def test_post_init_creates_workers(self):
-        """Test that post_init creates the correct number of worker tasks."""
-        mock_app = MagicMock()
-        mock_bot = AsyncMock(spec=Bot)
-        mock_app.bot = mock_bot
+    async def test_start_workers_creates_workers(self):
+        """Test that start_workers creates the correct number of worker tasks."""
+        from telethon import TelegramClient
+        
+        mock_client = AsyncMock(spec=TelegramClient)
         
         with patch('main.asyncio.create_task') as mock_create_task:
-            await main.post_init(mock_app)
+            await main.start_workers(mock_client)
             
             # Should create NUM_WORKERS tasks
             assert mock_create_task.call_count == main.NUM_WORKERS
@@ -238,27 +237,30 @@ class TestTelegramHandlers:
                 # The argument should be a coroutine
                 assert hasattr(call_args[0][0], '__await__')
 
-    async def test_job_creation_properties(self, mock_audio_message, mock_context):
+    async def test_job_creation_properties(self, mock_audio_event):
         """Test that Job objects are created with correct properties."""
-        with patch.object(main.processing_queue, 'qsize', return_value=3), \
-             patch.object(main.processing_queue, 'put', new_callable=AsyncMock) as mock_put, \
-             patch.object(mock_audio_message.effective_message, 'reply_text', new_callable=AsyncMock) as mock_reply:
+        with patch.object(main.bot_core, 'validate_audio_file', return_value=None), \
+             patch.object(main.bot_core, 'queue_audio_job', return_value=(True, None)) as mock_queue, \
+             patch.object(main.bot_core, 'get_queue_position', return_value=1):
             
-            # Mock the reply_text to return a message with an ID
+            # Mock the respond to return a message with an ID
             mock_message = MagicMock()
-            mock_message.message_id = 999
-            mock_reply.return_value = mock_message
+            mock_message.id = 999
+            mock_audio_event.respond.return_value = mock_message
             
-            await main.handle_audio(mock_audio_message, mock_context)
+            await main.handle_audio(mock_audio_event)
             
-            job = mock_put.call_args[0][0]
+            # Should queue the job
+            mock_queue.assert_called_once()
             
-            # Verify all job properties
-            assert isinstance(job, main.Job)
-            assert job.chat_id == 12345
-            assert job.message_id == 1
-            assert job.file_id == "audio_456"
-            assert job.file_name == "song.mp3"
-            assert job.mime_type == "audio/mp3"
-            assert job.file_size == 2 * 1024 * 1024
-            assert job.processing_msg_id == 999
+            # Check that the audio message was created with correct properties
+            call_args = mock_queue.call_args
+            audio_message = call_args[1]['audio']
+            
+            assert call_args[1]['chat_id'] == 12345
+            assert call_args[1]['message_id'] == 1
+            assert audio_message.file_id == "456"
+            assert audio_message.file_name == "song.mp3"
+            assert audio_message.mime_type == "audio/mp3"
+            assert audio_message.file_size == 2 * 1024 * 1024
+            assert call_args[1]['processing_msg_id'] == 999

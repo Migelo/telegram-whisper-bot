@@ -31,7 +31,7 @@ class TestAudioProcessing:
             file_id="large_file_456",
             file_name="large_audio.mp3",
             mime_type="audio/mp3",
-            file_size=25 * 1024 * 1024,  # Over limit
+            file_size=3 * 1024 * 1024 * 1024,  # 3GB - Over 2GB limit
             processing_msg_id=2
         )
 
@@ -39,13 +39,13 @@ class TestAudioProcessing:
         """Test that oversized files are rejected during processing."""
         bot_core.model = MagicMock()  # Mock model
         
-        result = await bot_core.process_audio_job(large_job, mock_bot)
+        result = await bot_core.process_audio_job(large_job, mock_bot, MagicMock())
         
         assert result is False
-        mock_bot.edit_message_text.assert_called_once_with(
-            chat_id=large_job.chat_id,
-            message_id=large_job.processing_msg_id,
-            text="File is too large. The limit is 256 MB."
+        mock_bot.edit_message.assert_called_once_with(
+            entity=large_job.chat_id,
+            message=large_job.processing_msg_id,
+            text="File is too large. The limit is 2 GB."
         )
 
     @patch('bot_core.whisper')
@@ -60,19 +60,19 @@ class TestAudioProcessing:
         mock_whisper.load_audio.return_value = [0] * 16000  # 1 second of audio
         mock_to_thread.return_value = {"text": "Hello world test transcription"}
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is True
         
         # Verify bot interactions
-        assert mock_bot.edit_message_text.call_count >= 3  # Download, analyze, process messages
+        assert mock_bot.edit_message.call_count >= 3  # Download, analyze, process messages
         mock_bot.send_message.assert_called_once()
         
         # Verify transcription was sent
         send_call = mock_bot.send_message.call_args
-        assert send_call[1]['chat_id'] == sample_job.chat_id
-        assert "Transcription:" in send_call[1]['text']
-        assert "Hello world test transcription" in send_call[1]['text']
+        assert send_call[1]['entity'] == sample_job.chat_id
+        assert "Transcription:" in send_call[1]['message']
+        assert "Hello world test transcription" in send_call[1]['message']
 
     @patch('bot_core.whisper')
     @patch('bot_core.asyncio.to_thread')
@@ -86,13 +86,13 @@ class TestAudioProcessing:
         mock_whisper.load_audio.return_value = [0] * 16000
         mock_to_thread.return_value = {"text": "   "}  # Empty/whitespace transcription
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is True
         mock_bot.send_message.assert_called_once_with(
-            chat_id=sample_job.chat_id,
-            text="The audio contained no detectable speech.",
-            reply_to_message_id=sample_job.message_id
+            entity=sample_job.chat_id,
+            message="The audio contained no detectable speech.",
+            reply_to=sample_job.message_id
         )
 
     @patch('bot_core.whisper')
@@ -110,7 +110,7 @@ class TestAudioProcessing:
         long_text = "This is a test. " * 300  # Should exceed 4096 chars
         mock_to_thread.return_value = {"text": long_text}
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is True
         
@@ -119,21 +119,23 @@ class TestAudioProcessing:
         
         # Verify all chunks contain header and content
         for call in mock_bot.send_message.call_args_list:
-            assert "Transcription:" in call[1]['text']
+            assert "Transcription:" in call[1]['message']
 
+    @patch('bot_core.whisper')
     @patch('bot_core.asyncio.to_thread')
-    async def test_processing_download_error(self, mock_to_thread, bot_core, mock_bot, sample_job):
+    async def test_processing_download_error(self, mock_to_thread, mock_whisper, bot_core, mock_bot, sample_job):
         """Test handling of download errors."""
         bot_core.model = MagicMock()
-        mock_bot.get_file.side_effect = Exception("Download failed")
+        mock_whisper.load_audio.side_effect = Exception("Download failed")
+        mock_bot.get_messages.side_effect = Exception("Download failed")
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is False
         mock_bot.send_message.assert_called_once_with(
-            chat_id=sample_job.chat_id,
-            text="Sorry, failed to download your file. Please try again.",
-            reply_to_message_id=sample_job.message_id
+            entity=sample_job.chat_id,
+            message="Sorry, failed to download your file. Please try again.",
+            reply_to=sample_job.message_id
         )
 
     @patch('bot_core.whisper')
@@ -148,13 +150,13 @@ class TestAudioProcessing:
         mock_whisper.load_audio.return_value = [0] * 16000
         mock_to_thread.side_effect = Exception("Whisper transcription failed")
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is False
         mock_bot.send_message.assert_called_once_with(
-            chat_id=sample_job.chat_id,
-            text="Sorry, failed to transcribe your audio. The file may be corrupted or in an unsupported format.",
-            reply_to_message_id=sample_job.message_id
+            entity=sample_job.chat_id,
+            message="Sorry, failed to transcribe your audio. The file may be corrupted or in an unsupported format.",
+            reply_to=sample_job.message_id
         )
 
     @patch('bot_core.whisper')
@@ -168,32 +170,32 @@ class TestAudioProcessing:
         mock_tempdir.return_value.__enter__.return_value = "/tmp/test"
         mock_whisper.load_audio.side_effect = Exception("Generic error")
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is False
         mock_bot.send_message.assert_called_once_with(
-            chat_id=sample_job.chat_id,
-            text="Sorry, an error occurred while processing your file.",
-            reply_to_message_id=sample_job.message_id
+            entity=sample_job.chat_id,
+            message="Sorry, an error occurred while processing your file.",
+            reply_to=sample_job.message_id
         )
 
     async def test_cleanup_processing_message(self, bot_core, mock_bot, sample_job):
         """Test cleanup of processing status message."""
         await bot_core.cleanup_processing_message(sample_job, mock_bot)
         
-        mock_bot.delete_message.assert_called_once_with(
-            chat_id=sample_job.chat_id,
-            message_id=sample_job.processing_msg_id
+        mock_bot.delete_messages.assert_called_once_with(
+            entity=sample_job.chat_id,
+            message_ids=sample_job.processing_msg_id
         )
 
     async def test_cleanup_processing_message_fails_silently(self, bot_core, mock_bot, sample_job):
         """Test that cleanup failures are handled silently."""
-        mock_bot.delete_message.side_effect = Exception("Delete failed")
+        mock_bot.delete_messages.side_effect = Exception("Delete failed")
         
         # Should not raise exception
         await bot_core.cleanup_processing_message(sample_job, mock_bot)
         
-        mock_bot.delete_message.assert_called_once()
+        mock_bot.delete_messages.assert_called_once()
 
     @patch('bot_core.whisper')
     @patch('bot_core.asyncio.to_thread')
@@ -207,15 +209,15 @@ class TestAudioProcessing:
         mock_whisper.load_audio.return_value = [0] * (16000 * 120)  # 2 minutes of audio
         mock_to_thread.return_value = {"text": "Test transcription"}
         
-        result = await bot_core.process_audio_job(sample_job, mock_bot)
+        result = await bot_core.process_audio_job(sample_job, mock_bot, MagicMock())
         
         assert result is True
         
         # Check that duration estimation message was sent
-        estimation_calls = [call for call in mock_bot.edit_message_text.call_args_list 
+        estimation_calls = [call for call in mock_bot.edit_message.call_args_list 
                           if "Estimated time:" in str(call)]
         assert len(estimation_calls) > 0
         
         # Should show estimated time (2 minutes * 13 seconds/minute = 26 seconds)
-        estimation_text = estimation_calls[0][1]['text']
-        assert "26 seconds" in estimation_text
+        estimation_call = estimation_calls[0][1]['text']
+        assert "26 seconds" in estimation_call

@@ -66,10 +66,11 @@ class TestAudioFormats:
 
     async def test_queue_audio_with_various_formats(self, bot_core, sample_formats):
         """Test queueing audio with different formats."""
-        for mime_type, filename, _ in sample_formats:
+        for i, (mime_type, filename, _) in enumerate(sample_formats):
             audio = self.create_audio_message(mime_type, filename)
-            success = await bot_core.queue_audio_job(12345, 1, audio, 2)
-            assert success is True, f"Should queue {mime_type} successfully"
+            # Use different chat_id for each format to avoid rate limiting
+            success, error = await bot_core.queue_audio_job(12345 + i, 1, audio, 2)
+            assert success is True, f"Should queue {mime_type} successfully, got error: {error}"
 
     @patch('bot_core.whisper')
     @patch('bot_core.asyncio.to_thread')
@@ -87,7 +88,7 @@ class TestAudioFormats:
             mock_guess_ext.return_value = expected_ext
             
             job = self.create_job_for_format(mime_type, filename)
-            result = await bot_core.process_audio_job(job, mock_bot)
+            result = await bot_core.process_audio_job(job, mock_bot, MagicMock())
             
             assert result is True
             # Verify mimetypes.guess_extension was called with the MIME type
@@ -108,7 +109,7 @@ class TestAudioFormats:
         mock_guess_ext.return_value = None  # Unknown MIME type
         
         job = self.create_job_for_format("audio/unknown", "mystery.xyz")
-        result = await bot_core.process_audio_job(job, mock_bot)
+        result = await bot_core.process_audio_job(job, mock_bot, MagicMock())
         
         assert result is True
         # Should fall back to .ogg extension
@@ -116,17 +117,18 @@ class TestAudioFormats:
 
     async def test_filename_generation_for_different_formats(self, bot_core, sample_formats):
         """Test filename generation for various formats."""
-        for mime_type, _, expected_ext in sample_formats:
+        for i, (mime_type, _, expected_ext) in enumerate(sample_formats):
             # Test with no filename provided
             audio = AudioMessage(
-                file_id="test_123",
+                file_id=f"test_{i}",
                 file_size=1024*1024,
                 mime_type=mime_type,
                 file_name=None,
-                file_unique_id="unique_123"
+                file_unique_id=f"unique_{i}"
             )
             
-            success = await bot_core.queue_audio_job(12345, 1, audio, 2)
+            # Use different chat_id for each format to avoid rate limiting
+            success, _ = await bot_core.queue_audio_job(12345 + i, 1, audio, 2)
             assert success is True
             
             # Get the job from the queue to check filename
@@ -135,7 +137,7 @@ class TestAudioFormats:
             if mime_type == "audio/ogg":
                 assert job.file_name == "voice_message.ogg"
             else:
-                expected_filename = f"audio_file_unique_123.{mime_type.split('/')[1]}"
+                expected_filename = f"audio_file_unique_{i}.{mime_type.split('/')[1]}"
                 assert job.file_name == expected_filename
 
     @patch('bot_core.whisper')
@@ -152,14 +154,14 @@ class TestAudioFormats:
             mock_to_thread.return_value = {"text": f"Transcription for {mime_type}"}
             
             job = self.create_job_for_format(mime_type, filename)
-            result = await bot_core.process_audio_job(job, mock_bot)
+            result = await bot_core.process_audio_job(job, mock_bot, MagicMock())
             
             assert result is True
             
             # Verify transcription was sent
             mock_bot.send_message.assert_called()
             send_call = mock_bot.send_message.call_args
-            assert f"Transcription for {mime_type}" in send_call[1]['text']
+            assert f"Transcription for {mime_type}" in send_call[1]['message']
             
             # Reset mock for next iteration
             mock_bot.reset_mock()
@@ -206,7 +208,7 @@ class TestAudioFormats:
                 mock_to_thread.return_value = {"text": "Test"}
                 
                 job = self.create_job_for_format(mime_type, filename)
-                await bot_core.process_audio_job(job, mock_bot)
+                await bot_core.process_audio_job(job, mock_bot, MagicMock())
                 
                 # Verify whisper.load_audio was called with the temp path
                 mock_whisper.load_audio.assert_called()
@@ -243,13 +245,13 @@ class TestAudioFormats:
             mock_whisper.load_audio.side_effect = Exception(f"Cannot process {mime_type}")
             
             job = self.create_job_for_format(mime_type, filename)
-            result = await bot_core.process_audio_job(job, mock_bot)
+            result = await bot_core.process_audio_job(job, mock_bot, MagicMock())
             
             assert result is False
             mock_bot.send_message.assert_called_with(
-                chat_id=job.chat_id,
-                text="Sorry, an error occurred while processing your file.",
-                reply_to_message_id=job.message_id
+                entity=job.chat_id,
+                message="Sorry, an error occurred while processing your file.",
+                reply_to=job.message_id
             )
             
             # Reset mocks
@@ -267,7 +269,7 @@ class TestAudioFormats:
             file_unique_id="unique_voice"
         )
         
-        success = await bot_core.queue_audio_job(12345, 1, voice_audio, 2)
+        success, _ = await bot_core.queue_audio_job(12345, 1, voice_audio, 2)
         assert success is True
         
         # Check generated filename

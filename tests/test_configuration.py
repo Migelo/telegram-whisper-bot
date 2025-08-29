@@ -1,5 +1,6 @@
 import pytest
 import os
+import asyncio
 from unittest.mock import patch, MagicMock
 from bot_core import BotCore, AudioMessage
 import main
@@ -14,7 +15,7 @@ class TestConfiguration:
         
         assert bot_core.whisper_model == "base"
         assert bot_core.num_workers == 2
-        assert bot_core.max_file_size == 20 * 1024 * 1024
+        assert bot_core.max_file_size == 2 * 1024 * 1024 * 1024  # 2GB
         assert bot_core.max_queue_size == 100
 
     def test_bot_core_custom_configuration(self):
@@ -22,19 +23,21 @@ class TestConfiguration:
         bot_core = BotCore(
             whisper_model="large",
             num_workers=4,
-            max_file_size=50 * 1024 * 1024,
+            max_file_size=1024 * 1024 * 1024,  # 1GB
             max_queue_size=200
         )
         
         assert bot_core.whisper_model == "large"
         assert bot_core.num_workers == 4
-        assert bot_core.max_file_size == 50 * 1024 * 1024
+        assert bot_core.max_file_size == 1024 * 1024 * 1024
         assert bot_core.max_queue_size == 200
 
     @patch.dict(os.environ, {
         'WHISPER_MODEL': 'small',
         'NUM_WORKERS': '3',
-        'TELEGRAM_BOT_TOKEN': 'test_token_123'
+        'TELEGRAM_BOT_TOKEN': 'test_token_123',
+        'API_ID': '12345',
+        'API_HASH': 'test_api_hash'
     })
     def test_main_environment_variable_parsing(self):
         """Test that main.py correctly reads environment variables."""
@@ -45,6 +48,8 @@ class TestConfiguration:
         assert main.WHISPER_MODEL == "small"
         assert main.NUM_WORKERS == 3
         assert main.TELEGRAM_BOT_TOKEN == "test_token_123"
+        assert main.API_ID == 12345
+        assert main.API_HASH == "test_api_hash"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_main_default_environment_values(self):
@@ -55,6 +60,8 @@ class TestConfiguration:
         assert main.WHISPER_MODEL == "base"
         assert main.NUM_WORKERS == 2
         assert main.TELEGRAM_BOT_TOKEN is None
+        assert main.API_ID == 0
+        assert main.API_HASH == ""
 
     @patch.dict(os.environ, {'NUM_WORKERS': 'invalid_number'})
     def test_invalid_num_workers_environment_variable(self):
@@ -82,12 +89,13 @@ class TestConfiguration:
     def test_file_size_limits_configuration(self):
         """Test different file size limit configurations."""
         test_cases = [
-            (1 * 1024 * 1024, True),      # 1MB - should be valid
-            (10 * 1024 * 1024, True),     # 10MB - should be valid
-            (50 * 1024 * 1024, False),    # 50MB - over default limit
+            (1 * 1024 * 1024, True),                    # 1MB - should be valid
+            (100 * 1024 * 1024, True),                  # 100MB - should be valid
+            (1024 * 1024 * 1024, True),                 # 1GB - should be valid  
+            (3 * 1024 * 1024 * 1024, False),            # 3GB - over default 2GB limit
         ]
         
-        bot_core = BotCore(max_file_size=20 * 1024 * 1024)
+        bot_core = BotCore(max_file_size=2 * 1024 * 1024 * 1024)  # 2GB
         
         for file_size, should_be_valid in test_cases:
             audio = AudioMessage(
@@ -102,6 +110,7 @@ class TestConfiguration:
                 assert error is None, f"File size {file_size} should be valid"
             else:
                 assert error is not None, f"File size {file_size} should be invalid"
+                assert "2 GB" in error
 
     def test_queue_size_limits_configuration(self):
         """Test different queue size configurations."""
@@ -123,13 +132,14 @@ class TestConfiguration:
         audio = AudioMessage("test", 1024*1024, "audio/ogg", "test.ogg")
         
         # Fill small queue
-        success1 = await small_queue_bot.queue_audio_job(1, 1, audio, 1)
-        success2 = await small_queue_bot.queue_audio_job(2, 2, audio, 2)
-        success3 = await small_queue_bot.queue_audio_job(3, 3, audio, 3)  # Should fail
+        success1, _ = await small_queue_bot.queue_audio_job(1, 1, audio, 1)
+        success2, _ = await small_queue_bot.queue_audio_job(2, 2, audio, 2)
+        success3, error = await small_queue_bot.queue_audio_job(3, 3, audio, 3)  # Should fail
         
         assert success1 is True
         assert success2 is True
         assert success3 is False
+        assert "queue is full" in error
 
     def test_whisper_model_configurations(self):
         """Test different Whisper model configurations."""
@@ -139,54 +149,52 @@ class TestConfiguration:
             bot_core = BotCore(whisper_model=model)
             assert bot_core.whisper_model == model
 
-    @patch('bot_core.whisper.load_model')
-    def test_whisper_model_loading_with_different_models(self, mock_load_model):
+    def test_whisper_model_loading_with_different_models(self):
         """Test loading different Whisper model sizes."""
         models_to_test = ["tiny", "base", "small", "medium", "large"]
         
         for model_name in models_to_test:
-            # Create fresh mock for each test
-            mock_model = MagicMock()
-            mock_load_model.return_value = mock_model
-            
-            bot_core = BotCore(whisper_model=model_name)
-            success = bot_core.load_whisper_model()
-            
-            assert success is True
-            mock_load_model.assert_called_with(model_name)
-            assert bot_core.model == mock_model
-            
-            mock_load_model.reset_mock()
+            with patch('bot_core.whisper') as mock_whisper:
+                # Create fresh mock for each test
+                mock_model = MagicMock()
+                mock_whisper.load_model.return_value = mock_model
+                
+                bot_core = BotCore(whisper_model=model_name)
+                result = bot_core.get_worker_model("test_worker")
+                
+                assert result == mock_model
+                mock_whisper.load_model.assert_called_with(model_name)
+                assert bot_core.models["test_worker"] == mock_model
 
-    @patch('bot_core.whisper.load_model')
-    def test_whisper_model_loading_failure_handling(self, mock_load_model):
+    def test_whisper_model_loading_failure_handling(self):
         """Test handling of Whisper model loading failures."""
-        mock_load_model.side_effect = Exception("Model not found")
-        
-        bot_core = BotCore(whisper_model="nonexistent")
-        success = bot_core.load_whisper_model()
-        
-        assert success is False
-        assert bot_core.model is None
+        with patch('bot_core.whisper') as mock_whisper:
+            mock_whisper.load_model.side_effect = Exception("Model not found")
+            
+            bot_core = BotCore(whisper_model="nonexistent")
+            result = bot_core.get_worker_model("test_worker")
+            
+            assert result is None
+            assert "test_worker" not in bot_core.models
 
     def test_constants_configuration(self):
         """Test that constants are properly configured."""
         # Test main.py constants
-        assert main.MAX_FILE_SIZE_MB == 20 * 1024 * 1024
+        assert main.MAX_FILE_SIZE_MB == 2 * 1024 * 1024 * 1024  # 2GB
         assert main.MAX_QUEUE_SIZE == 100
         
         # These should be configurable via environment
         assert isinstance(main.WHISPER_MODEL, str)
         assert isinstance(main.NUM_WORKERS, int)
 
-    @patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': ''})
+    @patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': '', 'API_ID': '12345', 'API_HASH': 'test_hash'})
     def test_empty_telegram_token(self):
         """Test handling of empty Telegram bot token."""
         import importlib
         importlib.reload(main)
         
         with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN environment variable not set"):
-            main.main()
+            asyncio.run(main.main())
 
     @patch.dict(os.environ, {}, clear=True)
     def test_missing_telegram_token(self):
@@ -195,7 +203,7 @@ class TestConfiguration:
         importlib.reload(main)
         
         with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN environment variable not set"):
-            main.main()
+            asyncio.run(main.main())
 
     def test_worker_count_validation(self):
         """Test validation of worker count configurations."""
@@ -235,7 +243,9 @@ class TestConfiguration:
 
     @patch.dict(os.environ, {
         'WHISPER_MODEL': 'medium',
-        'NUM_WORKERS': '6'
+        'NUM_WORKERS': '6',
+        'API_ID': '12345',
+        'API_HASH': 'test_hash'
     })
     def test_environment_integration_with_bot_core(self):
         """Test integration between environment variables and BotCore."""
@@ -260,30 +270,27 @@ class TestConfiguration:
         assert bot_core.logger is not None
         assert bot_core.logger.name == 'bot_core'
 
-    @patch('bot_core.whisper.load_model')
-    def test_per_worker_model_configuration(self, mock_load_model):
+    def test_per_worker_model_configuration(self):
         """Test that each worker can have its own model configuration."""
-        mock_model = MagicMock()
-        mock_load_model.return_value = mock_model
-        
-        # Clear any existing models
-        main.models.clear()
-        
-        # Test multiple workers with same model
-        worker_names = ["Worker-1", "Worker-2", "Worker-3"]
-        
-        for worker_name in worker_names:
-            # Each worker should load its own model instance
-            mock_bot = MagicMock()
+        with patch('bot_core.whisper') as mock_whisper:
+            mock_model = MagicMock()
+            mock_whisper.load_model.return_value = mock_model
             
-            # Simulate worker initialization
-            if worker_name not in main.models:
-                main.models[worker_name] = mock_load_model(main.WHISPER_MODEL)
+            # Create a bot_core instance for this test
+            bot_core = BotCore()
+            
+            # Test multiple workers with same model
+            worker_names = ["Worker-1", "Worker-2", "Worker-3"]
+            
+            for worker_name in worker_names:
+                # Each worker should be able to get its own model instance
+                model = bot_core.get_worker_model(worker_name)
+                assert model == mock_model
         
-        # Each worker should have its own model instance
-        assert len(main.models) == len(worker_names)
+        # Each worker should have loaded the same model
+        assert len(bot_core.models) == len(worker_names)
         for worker_name in worker_names:
-            assert worker_name in main.models
+            assert worker_name in bot_core.models
 
     def test_memory_management_configuration(self):
         """Test configuration affects memory usage patterns."""

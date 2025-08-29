@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from bot_core import BotCore, Job, AudioMessage
+from bot_core import Job, AudioMessage
 
 pytestmark = pytest.mark.asyncio
 
@@ -9,48 +9,41 @@ pytestmark = pytest.mark.asyncio
 class TestConcurrency:
     """Test concurrent processing behavior."""
 
-    @pytest.fixture
-    def sample_jobs(self):
-        """Create multiple sample jobs for concurrent testing."""
+    def create_test_jobs(self, count=3):
+        """Create test jobs for concurrent testing."""
         return [
-            Job(
-                chat_id=12345 + i,
-                message_id=i,
-                file_id=f"test_file_{i}",
-                file_name=f"test_audio_{i}.ogg",
-                mime_type="audio/ogg",
-                file_size=1024 * 1024,
-                processing_msg_id=i + 100
-            ) for i in range(3)
+            Job(chat_id=12345 + i, message_id=i, file_id=f"test_file_{i}", 
+                file_name=f"test_audio_{i}.ogg", mime_type="audio/ogg", 
+                file_size=1024 * 1024, processing_msg_id=i + 100)
+            for i in range(count)
         ]
+
+    def setup_processing_mocks(self, bot_core, mock_tempdir, mock_whisper, mock_to_thread, transcription="Test"):
+        """Standard mock setup for processing tests."""
+        bot_core.model = MagicMock()
+        mock_tempdir.return_value.__enter__.return_value = "/tmp/test"
+        mock_whisper.load_audio.return_value = [0] * 16000
+        mock_to_thread.return_value = {"text": transcription}
 
     @patch('bot_core.whisper')
     @patch('bot_core.asyncio.to_thread')
     @patch('tempfile.TemporaryDirectory')
-    async def test_concurrent_transcription_with_separate_models(self, mock_tempdir, mock_to_thread, mock_whisper,
-                                                               bot_core, mock_bot, sample_jobs):
+    async def test_concurrent_transcription_with_separate_models(self, mock_tempdir, mock_to_thread, mock_whisper, bot_core, mock_bot):
         """Test that concurrent transcriptions work with separate model instances."""
-        # Setup mocks
-        bot_core.model = MagicMock()
-        mock_tempdir.return_value.__enter__.return_value = "/tmp/test"
-        mock_whisper.load_audio.return_value = [0] * 16000  # 1 second of audio
+        sample_jobs = self.create_test_jobs()
+        self.setup_processing_mocks(bot_core, mock_tempdir, mock_whisper, mock_to_thread)
         
-        # Track call order and timing
-        call_order = []
+        # Track concurrent execution timing
         call_times = []
-        
         async def mock_transcribe_with_delay(*args):
-            """Mock transcribe that takes time and tracks call order."""
-            call_order.append(len(call_order))
             call_times.append(asyncio.get_event_loop().time())
-            await asyncio.sleep(0.1)  # Simulate processing time
-            return {"text": f"Transcription {len(call_order)}"}
-        
+            await asyncio.sleep(0.1)
+            return {"text": f"Transcription {len(call_times)}"}
         mock_to_thread.side_effect = mock_transcribe_with_delay
         
         # Start multiple jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot) 
+            bot_core.process_audio_job(job, mock_bot, MagicMock()) 
             for job in sample_jobs
         ]
         
@@ -90,11 +83,7 @@ class TestConcurrency:
         
         mock_to_thread.side_effect = mock_transcribe_with_potential_corruption
         
-        # Process jobs concurrently
-        tasks = [
-            bot_core.process_audio_job(job, mock_bot) 
-            for job in sample_jobs
-        ]
+        tasks = [bot_core.process_audio_job(job, mock_bot, MagicMock()) for job in sample_jobs]
         
         # All should complete without the tensor error
         results = await asyncio.gather(*tasks)
@@ -124,7 +113,7 @@ class TestConcurrency:
         
         # Process multiple jobs concurrently - some will fail, some succeed
         tasks = [
-            bot_core.process_audio_job(job, mock_bot) 
+            bot_core.process_audio_job(job, mock_bot, MagicMock()) 
             for job in sample_jobs
         ]
         
@@ -161,7 +150,7 @@ class TestConcurrency:
             
             # Start multiple jobs
             tasks = [
-                bot_core.process_audio_job(job, mock_bot) 
+                bot_core.process_audio_job(job, mock_bot, MagicMock()) 
                 for job in sample_jobs[:2]  # Just test 2 to keep it simple
             ]
             
@@ -175,19 +164,13 @@ class TestConcurrency:
 class TestConcurrencyFailureScenarios:
     """Test concurrent processing under failure conditions."""
 
-    @pytest.fixture
-    def sample_jobs(self):
-        """Create multiple sample jobs for failure testing."""
+    def create_test_jobs(self, count=5):
+        """Create test jobs for failure testing."""
         return [
-            Job(
-                chat_id=12345 + i,
-                message_id=i,
-                file_id=f"test_file_{i}",
-                file_name=f"test_audio_{i}.ogg",
-                mime_type="audio/ogg",
-                file_size=1024 * 1024,
-                processing_msg_id=i + 100
-            ) for i in range(5)
+            Job(chat_id=12345 + i, message_id=i, file_id=f"test_file_{i}", 
+                file_name=f"test_audio_{i}.ogg", mime_type="audio/ogg", 
+                file_size=1024 * 1024, processing_msg_id=i + 100)
+            for i in range(count)
         ]
 
     @patch('bot_core.whisper')
@@ -217,7 +200,7 @@ class TestConcurrencyFailureScenarios:
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -256,7 +239,7 @@ class TestConcurrencyFailureScenarios:
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -293,7 +276,7 @@ class TestConcurrencyFailureScenarios:
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -328,12 +311,12 @@ class TestConcurrencyFailureScenarios:
                 raise Exception("Rate limit exceeded")
             return MagicMock()
         
-        mock_bot.edit_message_text.side_effect = mock_api_with_rate_limit
+        mock_bot.edit_message.side_effect = mock_api_with_rate_limit
         mock_bot.send_message.side_effect = mock_api_with_rate_limit
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -371,7 +354,7 @@ class TestConcurrencyFailureScenarios:
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -407,7 +390,7 @@ class TestConcurrencyFailureScenarios:
         
         # Process jobs concurrently
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in sample_jobs
         ]
         
@@ -441,7 +424,7 @@ class TestConcurrencyFailureScenarios:
         
         # Add exactly MAX_QUEUE_SIZE jobs
         for i in range(bot_core.max_queue_size):
-            success = await bot_core.queue_audio_job(12345+i, i, audio, i+100)
+            success, _ = await bot_core.queue_audio_job(12345+i, i, audio, i+100)
             assert success is True
         
         # Try to add more concurrently - should all be rejected
@@ -499,7 +482,7 @@ class TestConcurrencyFailureScenarios:
         # Process all jobs concurrently
         start_time = asyncio.get_event_loop().time()
         tasks = [
-            bot_core.process_audio_job(job, mock_bot)
+            bot_core.process_audio_job(job, mock_bot, MagicMock())
             for job in heavy_load_jobs
         ]
         

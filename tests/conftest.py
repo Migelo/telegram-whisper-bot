@@ -17,7 +17,7 @@ def mock_bot():
     mock_message = MagicMock()
     mock_message.message_id = 123
     bot.send_message.return_value = mock_message
-    bot.edit_message_text.return_value = mock_message
+    bot.edit_message.return_value = mock_message
     bot.delete_message.return_value = None
     
     return bot
@@ -76,3 +76,44 @@ def voice_message():
         file_name=None,
         file_unique_id="unique_789"
     )
+
+
+@pytest.fixture
+def rate_limited_bot_core():
+    """BotCore instance with rate limiting for testing."""
+    return BotCore(
+        whisper_model="base",
+        num_workers=2,
+        max_file_size=20 * 1024 * 1024,
+        max_queue_size=10,
+        max_jobs_per_user_in_queue=2
+    )
+
+
+@pytest.fixture
+def multiple_users():
+    """Multiple user IDs for testing rate limiting across users."""
+    return [12345, 67890, 11111, 22222, 33333]
+
+
+@pytest.fixture
+def test_job():
+    """Standard test job for validation and error testing."""
+    return Job(
+        chat_id=12345, message_id=1, file_id="test_file_123", file_name="test_audio.ogg",
+        mime_type="audio/ogg", file_size=1024 * 1024, processing_msg_id=2
+    )
+
+
+@pytest.fixture
+def mock_whisper_setup():
+    """Standard whisper mock setup for most tests."""
+    def _setup(bot_core, mock_tempdir, mock_whisper, audio_data=None, transcription="Test transcription"):
+        bot_core.model = MagicMock()
+        mock_tempdir.return_value.__enter__.return_value = "/tmp/test"
+        if audio_data is not None:
+            mock_whisper.load_audio.return_value = audio_data
+        else:
+            mock_whisper.load_audio.return_value = [0] * 16000  # 1 second default
+        return {"text": transcription}
+    return _setup

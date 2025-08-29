@@ -1,277 +1,195 @@
 import os
-import tempfile
 import asyncio
 import logging
-import mimetypes
-from dataclasses import dataclass
 
-from telegram import Update, Bot
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
+from telethon import TelegramClient, events
+from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
+from bot_core import BotCore, AudioMessage, Job, Config
 
 try:
     import whisper
 except ImportError:
     whisper = None
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
-NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", Config.DEFAULT_WHISPER_MODEL)
+NUM_WORKERS = int(os.getenv("NUM_WORKERS", str(Config.DEFAULT_NUM_WORKERS)))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-MAX_FILE_SIZE_MB = 20 * 1024 * 1024
-MAX_QUEUE_SIZE = 100
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+MAX_FILE_SIZE_MB = Config.DEFAULT_MAX_FILE_SIZE
+MAX_QUEUE_SIZE = Config.DEFAULT_MAX_QUEUE_SIZE
+MAX_JOBS_PER_USER_IN_QUEUE = int(os.getenv("MAX_JOBS_PER_USER_IN_QUEUE", str(Config.DEFAULT_MAX_JOBS_PER_USER)))
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Models will be loaded per worker to avoid concurrency issues
-models = {}  # worker_name -> model instance
+# Create bot core instance
+bot_core = BotCore(
+    whisper_model=WHISPER_MODEL,
+    num_workers=NUM_WORKERS,
+    max_file_size=MAX_FILE_SIZE_MB,
+    max_queue_size=MAX_QUEUE_SIZE,
+    max_jobs_per_user_in_queue=MAX_JOBS_PER_USER_IN_QUEUE
+)
 
 
-@dataclass
-class Job:
-    chat_id: int
-    message_id: int
-    file_id: str
-    file_name: str
-    mime_type: str
-    file_size: int
-    processing_msg_id: int
+# processing_queue is now managed by bot_core
 
 
-processing_queue = asyncio.Queue()
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(event):
     """Send a message when the command /start is issued."""
-    await update.message.reply_text(
-        "Hi! Send me a voice message or audio file (up to 20 MB), and I'll transcribe it for you."
+    await event.respond(
+        "Hi! Send me a voice message or audio file (up to 2 GB), and I'll transcribe it for you."
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(event):
     """Send a message when the command /help is issued."""
-    await update.message.reply_text(
+    await event.respond(
         "Send me any voice message or audio file, and I'll convert it to text. "
         f"I can process up to {NUM_WORKERS} files at the same time. If the queue is full, please wait."
     )
 
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_audio(event):
     """Handles incoming audio, adds it to the queue."""
-    message = update.effective_message
+    message = event.message
 
-    if message.voice:
-        audio = message.voice
-        file_name = "voice_message.ogg"
-    elif message.audio:
-        audio = message.audio
-        file_name = (
-            audio.file_name
-            or f"audio_file_{audio.file_unique_id}.{audio.mime_type.split('/')[1]}"
-        )
+    # Check if message has media (voice or audio)
+    if not message.media:
+        return
+        
+    # Handle voice messages and audio files
+    if hasattr(message.media, 'document') and message.media.document:
+        document = message.media.document
+        # Check if it's audio/voice by mime_type
+        if not document.mime_type.startswith('audio/'):
+            return
+        
+        file_size = document.size
+        file_name = getattr(document, 'file_name', None) or f"audio_{document.id}.{document.mime_type.split('/')[1]}"
+        mime_type = document.mime_type
+        file_id = document.id
     else:
         return
 
-    if audio.file_size > MAX_FILE_SIZE_MB:
-        await message.reply_text("File is too large. The limit is 256 MB.")
+    # Create audio message object
+    audio_message = AudioMessage(
+        file_id=str(file_id),
+        file_size=file_size,
+        mime_type=mime_type,
+        file_name=file_name,
+        file_unique_id=str(file_id)
+    )
+
+    # Validate file size
+    error_msg = bot_core.validate_audio_file(audio_message)
+    if error_msg:
+        await event.respond(error_msg)
         return
 
-    # Check if queue is full before adding
-    queue_size = processing_queue.qsize()
-    if queue_size >= MAX_QUEUE_SIZE:
-        await message.reply_text(
-            f"Sorry, the processing queue is full ({MAX_QUEUE_SIZE} files). Please try again later."
+    # Give immediate feedback that the file is being queued
+    processing_msg = await event.respond("Queueing your audio file...")
+
+    # Try to queue the job with rate limiting
+    success, error_message = await bot_core.queue_audio_job(
+        chat_id=event.chat_id,
+        message_id=message.id,
+        audio=audio_message,
+        processing_msg_id=processing_msg.id
+    )
+
+    if not success:
+        await event.client.edit_message(
+            entity=event.chat_id,
+            message=processing_msg.id,
+            text=error_message
         )
         return
 
-    # Give immediate feedback that the file is queued
-    processing_msg = await message.reply_text(
-        f"Your file has been queued for processing. Position: {queue_size + 1}"
-    )
-
-    # Create a lightweight job object with the correctly determined filename
-    job = Job(
-        chat_id=message.chat_id,
-        message_id=message.message_id,
-        file_id=audio.file_id,
-        file_name=file_name,
-        mime_type=audio.mime_type,
-        file_size=audio.file_size,
-        processing_msg_id=processing_msg.message_id,
-    )
-
-    await processing_queue.put(job)
-    logger.info(
-        f"Job added to queue for chat {job.chat_id}. Queue size: {processing_queue.qsize()}"
+    # Update message with queue position
+    queue_position = bot_core.get_queue_position()
+    await event.client.edit_message(
+        entity=event.chat_id,
+        message=processing_msg.id,
+        text=f"Your file has been queued for processing. Position: {queue_position}"
     )
 
 
-async def worker(name: str, bot: Bot):
+
+async def worker(name: str, client: TelegramClient):
     """The worker function that processes jobs from the queue."""
-    # Load a dedicated model for this worker
-    if name not in models:
-        if whisper is None:
-            logger.error(f"Whisper not available for {name} - install openai-whisper package")
-            return
-            
-        try:
-            logger.info(f"Loading Whisper model '{WHISPER_MODEL}' for {name}")
-            models[name] = whisper.load_model(WHISPER_MODEL)
-            logger.info(f"Model loaded successfully for {name}")
-        except Exception as e:
-            logger.error(f"Could not load Whisper model for {name}: {e}")
-            return
-    
-    model = models[name]
+    # Get model for this worker
+    model = bot_core.get_worker_model(name)
+    if not model:
+        logger.error(f"Failed to load model for {name}")
+        return
     
     while True:
+        job = None
         try:
-            job = await processing_queue.get()
+            job = await bot_core.processing_queue.get()
             logger.info(f"Worker '{name}' picked up job for chat {job.chat_id}")
 
-            # Check file size before downloading
-            if job.file_size > MAX_FILE_SIZE_MB:
-                await bot.edit_message_text(
-                    chat_id=job.chat_id,
-                    message_id=job.processing_msg_id,
-                    text="File is too large. The limit is 256 MB.",
-                )
-                continue
-
-            await bot.edit_message_text(
-                chat_id=job.chat_id,
-                message_id=job.processing_msg_id,
-                text="Downloading your audio file...",
-            )
-
-            # Download file only when ready to process
-            logger.info(f"Worker '{name}' downloading file for {job.file_name}")
-            file = await bot.get_file(job.file_id)
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                file_ext = mimetypes.guess_extension(job.mime_type)
-
-                if not file_ext:
-                    file_ext = ".ogg"
-
-                temp_path = os.path.join(temp_dir, f"audio{file_ext}")
-                await file.download_to_drive(temp_path)
-                logger.info(f"Worker '{name}' finished downloading {job.file_name}")
-
-                await bot.edit_message_text(
-                    chat_id=job.chat_id,
-                    message_id=job.processing_msg_id,
-                    text="Analyzing audio duration...",
-                )
-
-                if whisper is None:
-                    raise ImportError("Whisper not available - install openai-whisper package")
-                    
-                audio = whisper.load_audio(temp_path)
-                duration = len(audio) / 16000  # Convert samples to seconds
-                estimated_seconds = max(duration / 60 * 13, 2)
-
-                await bot.edit_message_text(
-                    chat_id=job.chat_id,
-                    message_id=job.processing_msg_id,
-                    text=f"Processing your audio. Estimated time: {estimated_seconds:1.0f} seconds.",
-                )
-
-                logger.info(
-                    f"Worker '{name}' starting transcription for {job.file_name}"
-                )
-                # Each worker has its own model - no lock needed
-                result = await asyncio.to_thread(model.transcribe, temp_path)
-                transcription = result["text"]
-                logger.info(
-                    f"Worker '{name}' finished transcription for {job.file_name}"
-                )
-
-            header = "Transcription:\n\n"
-            max_length = 4096  # Telegram's message character limit
-
-            if not transcription.strip():
-                await bot.send_message(
-                    chat_id=job.chat_id,
-                    text="The audio contained no detectable speech.",
-                    reply_to_message_id=job.message_id,
-                )
-            else:
-                # Split into chunks and send
-                for i in range(0, len(transcription), max_length - len(header)):
-                    chunk = transcription[i : i + max_length - len(header)]
-                    await bot.send_message(
-                        chat_id=job.chat_id,
-                        text=f"{header}{chunk}",
-                        reply_to_message_id=job.message_id,
-                    )
+            # Process the job using bot_core
+            success = await bot_core.process_audio_job(job, client, model)
+            logger.info(f"Worker '{name}' {'completed' if success else 'failed'} job for chat {job.chat_id}")
 
         except Exception as e:
-            logger.error(
-                f"Worker '{name}' failed on job for chat {job.chat_id}: {e}",
-                exc_info=True,
-            )
-            try:
-                # Determine error type for better user messaging
-                if "download" in str(e).lower() or "file" in str(e).lower():
-                    error_msg = "Sorry, failed to download your file. Please try again."
-                elif "transcribe" in str(e).lower() or "whisper" in str(e).lower():
-                    error_msg = "Sorry, failed to transcribe your audio. The file may be corrupted."
-                else:
-                    error_msg = "Sorry, an error occurred while processing your file."
-                
-                await bot.send_message(
-                    chat_id=job.chat_id,
-                    text=error_msg,
-                    reply_to_message_id=job.message_id,
-                )
-            except Exception as notify_error:
-                logger.error(
-                    f"Failed to notify user {job.chat_id} about error: {notify_error}"
-                )
+            logger.error(f"Worker '{name}' encountered error: {e}", exc_info=True)
+            if job:
+                await bot_core.complete_job(job)
 
         finally:
-            if "job" in locals():
+            if job:
                 try:
-                    await bot.delete_message(
-                        chat_id=job.chat_id, message_id=job.processing_msg_id
-                    )
+                    await bot_core.cleanup_processing_message(job, client)
                 except Exception:
                     pass
-                processing_queue.task_done()
+                bot_core.processing_queue.task_done()
 
 
-async def post_init(application: Application):
-    """Create worker tasks after the application is initialized."""
-    bot = application.bot
+async def start_workers(client: TelegramClient):
+    """Create worker tasks after the client is initialized."""
     for i in range(NUM_WORKERS):
-        asyncio.create_task(worker(f"Worker-{i + 1}", bot))
+        asyncio.create_task(worker(f"Worker-{i + 1}", client))
     logger.info(f"Started {NUM_WORKERS} worker tasks.")
 
 
-def main():
+async def main():
     """Start the bot."""
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set.")
+    if not API_ID or not API_HASH:
+        raise ValueError("API_ID and API_HASH environment variables must be set.")
 
-    application = (
-        Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
-    )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-
+    # Create the client and connect
+    client = TelegramClient('bot_session', API_ID, API_HASH)
+    await client.start(bot_token=TELEGRAM_BOT_TOKEN)
+    
+    # Start worker tasks
+    await start_workers(client)
+    
+    # Register event handlers
+    @client.on(events.NewMessage(pattern='/start'))
+    async def start_handler(event):
+        await start(event)
+    
+    @client.on(events.NewMessage(pattern='/help'))
+    async def help_handler(event):
+        await help_command(event)
+    
+    @client.on(events.NewMessage)
+    async def audio_handler(event):
+        # Only handle messages with media (audio/voice)
+        if event.message.media:
+            await handle_audio(event)
+    
     logger.info("Bot is starting... Press Ctrl+C to stop.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await client.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

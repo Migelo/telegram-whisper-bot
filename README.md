@@ -2,35 +2,50 @@
 
 ![Tests](https://github.com/Migelo/telegram-whisper-bot/workflows/Tests/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
-![Tests Count](https://img.shields.io/badge/tests-106-brightgreen)
+![Tests Count](https://img.shields.io/badge/tests-116-brightgreen)
+![File Size](https://img.shields.io/badge/file_size_limit-2GB-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A Telegram bot that transcribes audio messages using OpenAI's Whisper.
+A Telegram bot that transcribes audio messages using OpenAI's Whisper. Supports files up to 2GB using Telethon's MTProto API.
 
 ## Features
 
-- 🎤 **Audio Transcription** - Supports voice messages and audio files
+- 🎤 **Audio Transcription** - Supports voice messages and audio files up to 2GB
 - 📊 **Queue Management** - 100-file queue limit with rejection handling
 - 🔄 **Concurrent Processing** - Multiple workers with per-worker models
+- 🛡️ **Rate Limiting** - Per-user limits to prevent abuse (2 jobs per user in queue)
 - 🛡️ **Error Handling** - Comprehensive validation and graceful degradation
-- 🧪 **Comprehensive Testing** - 106 tests with full coverage
+- 🧪 **Comprehensive Testing** - 116 tests with full coverage
 - 🚀 **Production Ready** - Complete CI/CD pipeline
+- ⚡ **MTProto Protocol** - Uses Telethon for larger file support vs Bot API
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Get Telegram API Credentials
+
+1. **Get API credentials** from https://my.telegram.org/apps:
+   - `API_ID` - Your application ID
+   - `API_HASH` - Your application hash
+
+2. **Create a bot** with @BotFather on Telegram:
+   - Get your `TELEGRAM_BOT_TOKEN`
+
+### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Set Environment Variables
+### 3. Set Environment Variables
 ```bash
-export TELEGRAM_BOT_TOKEN="your_bot_token_here"
+export API_ID="your_api_id_here"          # Required: from my.telegram.org
+export API_HASH="your_api_hash_here"      # Required: from my.telegram.org  
+export TELEGRAM_BOT_TOKEN="your_bot_token_here" # Required: from @BotFather
 export WHISPER_MODEL="base"  # Optional: tiny, base, small, medium, large
 export NUM_WORKERS="2"       # Optional: number of concurrent workers
+export MAX_JOBS_PER_USER_IN_QUEUE="2"  # Optional: max jobs per user in queue
 ```
 
-### 3. Run the Bot
+### 4. Run the Bot
 ```bash
 python main.py
 ```
@@ -67,7 +82,7 @@ See [TESTING.md](TESTING.md) for detailed testing documentation.
 
 - **Voice Messages** - `.ogg` (Telegram voice notes)
 - **Audio Files** - `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.webm`
-- **File Size Limit** - Up to 20MB per file
+- **File Size Limit** - Up to 2GB per file (MTProto API advantage over Bot API)
 
 ## CI/CD Pipeline
 

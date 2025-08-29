@@ -55,10 +55,10 @@ class SimpleBotCore:
         """Get the current queue size (position for next item)."""
         return self.processing_queue.qsize()
 
-    async def queue_audio_job(self, chat_id: int, message_id: int, audio: AudioMessage, processing_msg_id: int) -> bool:
-        """Queue an audio processing job. Returns True if queued, False if rejected."""
+    async def queue_audio_job(self, chat_id: int, message_id: int, audio: AudioMessage, processing_msg_id: int) -> tuple[bool, Optional[str]]:
+        """Queue an audio processing job. Returns (success, error_message)."""
         if self.is_queue_full():
-            return False
+            return False, f"Sorry, the processing queue is full ({self.max_queue_size} files). Please try again later."
 
         # Determine filename
         file_name = audio.file_name
@@ -79,7 +79,7 @@ class SimpleBotCore:
         )
 
         await self.processing_queue.put(job)
-        return True
+        return True, None
 
 
 class TestQueueManagementDemo:
@@ -124,7 +124,7 @@ class TestQueueManagementDemo:
 
     async def test_queue_single_job(self, bot_core, sample_audio):
         """Test queuing a single job."""
-        success = await bot_core.queue_audio_job(
+        success, _ = await bot_core.queue_audio_job(
             chat_id=12345,
             message_id=1,
             audio=sample_audio,
@@ -142,7 +142,7 @@ class TestQueueManagementDemo:
         
         # Fill queue to capacity
         for i in range(3):
-            success = await bot_core.queue_audio_job(
+            success, _ = await bot_core.queue_audio_job(
                 chat_id=12345 + i,
                 message_id=i,
                 audio=sample_audio,
@@ -160,7 +160,7 @@ class TestQueueManagementDemo:
         
         # Fill queue to capacity
         for i in range(2):
-            success = await bot_core.queue_audio_job(
+            success, _ = await bot_core.queue_audio_job(
                 chat_id=12345 + i,
                 message_id=i,
                 audio=sample_audio,
@@ -169,7 +169,7 @@ class TestQueueManagementDemo:
             assert success is True
         
         # Try to add one more - should be rejected
-        success = await bot_core.queue_audio_job(
+        success, error = await bot_core.queue_audio_job(
             chat_id=99999,
             message_id=999,
             audio=sample_audio,
@@ -177,6 +177,7 @@ class TestQueueManagementDemo:
         )
         
         assert success is False
+        assert "queue is full" in error
         assert bot_core.get_queue_position() == 2
         assert bot_core.is_queue_full()
 
@@ -186,7 +187,7 @@ class TestQueueManagementDemo:
         
         # Add 100 jobs
         for i in range(100):
-            success = await bot_core.queue_audio_job(
+            success, _ = await bot_core.queue_audio_job(
                 chat_id=i,
                 message_id=i,
                 audio=sample_audio,
@@ -198,13 +199,14 @@ class TestQueueManagementDemo:
         assert bot_core.is_queue_full()
         
         # 101st job should be rejected
-        success = await bot_core.queue_audio_job(
+        success, error = await bot_core.queue_audio_job(
             chat_id=999,
             message_id=999,
             audio=sample_audio,
             processing_msg_id=9999
         )
         assert success is False
+        assert "queue is full" in error
 
     async def test_filename_generation_voice_message(self, bot_core):
         """Test filename generation for voice messages."""
@@ -215,7 +217,7 @@ class TestQueueManagementDemo:
             file_name=None
         )
         
-        success = await bot_core.queue_audio_job(
+        success, _ = await bot_core.queue_audio_job(
             chat_id=123,
             message_id=1,
             audio=voice_message,
