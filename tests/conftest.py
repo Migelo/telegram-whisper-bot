@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from bot_core import AudioMessage, BotCore
+from bot_core import AudioMessage, BotCore, Job
 
 
 @pytest.fixture
@@ -52,6 +52,23 @@ def sample_audio():
         file_name="test_audio.ogg",
         file_unique_id="unique_123"
     )
+
+
+@pytest.fixture
+def sample_jobs():
+    """Sample jobs for concurrency testing."""
+    return [
+        Job(
+            chat_id=12345 + i,
+            message_id=i,
+            file_id=f"test_file_{i}",
+            file_name=f"test_audio_{i}.ogg",
+            mime_type="audio/ogg",
+            file_size=1024 * 1024,
+            processing_msg_id=i + 100
+        )
+        for i in range(5)
+    ]
 
 
 @pytest.fixture

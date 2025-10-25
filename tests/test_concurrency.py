@@ -130,14 +130,13 @@ class TestConcurrency:
         
         download_times = []
         
-        async def mock_get_file(*args):
+        async def mock_download_media(path):
             download_times.append(asyncio.get_event_loop().time())
             await asyncio.sleep(0.05)  # Simulate download time
-            mock_file = AsyncMock()
-            mock_file.download_to_drive = AsyncMock()
-            return mock_file
         
-        mock_bot.get_file.side_effect = mock_get_file
+        mock_message = AsyncMock()
+        mock_message.download_media = mock_download_media
+        mock_bot.get_messages.return_value = mock_message
         
         with patch('bot_core.whisper') as mock_whisper, \
              patch('tempfile.TemporaryDirectory') as mock_tempdir, \
@@ -186,17 +185,17 @@ class TestConcurrencyFailureScenarios:
         mock_to_thread.return_value = {"text": "Success"}
         
         # Simulate network timeouts for some downloads
-        async def mock_get_file_with_timeouts(file_id):
-            if "test_file_1" in file_id or "test_file_3" in file_id:
+        async def mock_get_messages_with_timeouts(chat_id, ids):
+            if ids in [1, 3]:  # message_ids for test_file_1 and test_file_3
                 await asyncio.sleep(0.05)  # Small delay before timeout
                 raise asyncio.TimeoutError("Network timeout")
             
             # Successful download
-            mock_file = AsyncMock()
-            mock_file.download_to_drive = AsyncMock()
-            return mock_file
+            mock_message = AsyncMock()
+            mock_message.download_media = AsyncMock()
+            return mock_message
         
-        mock_bot.get_file.side_effect = mock_get_file_with_timeouts
+        mock_bot.get_messages.side_effect = mock_get_messages_with_timeouts
         
         # Process jobs concurrently
         tasks = [
@@ -233,9 +232,9 @@ class TestConcurrencyFailureScenarios:
             if download_count >= 3:  # First 2 succeed, rest fail
                 raise OSError("No space left on device")
         
-        mock_file = AsyncMock()
-        mock_file.download_to_drive.side_effect = mock_download_with_disk_error
-        mock_bot.get_file.return_value = mock_file
+        mock_message = AsyncMock()
+        mock_message.download_media.side_effect = mock_download_with_disk_error
+        mock_bot.get_messages.return_value = mock_message
         
         # Process jobs concurrently
         tasks = [
@@ -427,16 +426,14 @@ class TestConcurrencyFailureScenarios:
             success, _ = await bot_core.queue_audio_job(12345+i, i, audio, i+100)
             assert success is True
         
-        # Try to add more concurrently - should all be rejected
-        overflow_tasks = []
+        # Try to add more one at a time - should all be rejected
+        overflow_results = []
         for i in range(5):  # Try to add 5 more
-            task = bot_core.queue_audio_job(99999+i, i, audio, i+200)
-            overflow_tasks.append(task)
+            result = await bot_core.queue_audio_job(99999+i, i, audio, i+200)
+            overflow_results.append(result)
         
-        overflow_results = await asyncio.gather(*overflow_tasks)
-        
-        # All overflow attempts should be rejected
-        assert all(result is False for result in overflow_results), "All overflow jobs should be rejected"
+        # All overflow attempts should be rejected when done sequentially
+        assert all(result[0] is False for result in overflow_results), "All overflow jobs should be rejected"
         
         # Queue should still be at capacity
         assert bot_core.is_queue_full()

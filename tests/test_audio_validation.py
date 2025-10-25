@@ -49,7 +49,7 @@ class TestAudioValidation:
         assert result is True
         mock_bot.send_message.assert_called_once_with(
             entity=sample_job.chat_id,
-            message="The audio file is too short to transcribe (less than 0.1 seconds).",
+            message="The audio file is too short to transcribe (less than 1 seconds).",
             reply_to=sample_job.message_id
         )
 
@@ -120,9 +120,9 @@ class TestAudioValidation:
     @patch('bot_core.whisper')
     @patch('tempfile.TemporaryDirectory')
     async def test_minimum_valid_duration(self, mock_tempdir, mock_whisper, bot_core, mock_bot):
-        """Test audio with exactly 0.1 seconds (minimum valid duration)."""
+        """Test audio with exactly 1 second (minimum valid duration)."""
         sample_job = self.create_test_job()
-        self.setup_audio_mocks(bot_core, mock_tempdir, mock_whisper, [0] * 1600)  # 0.1 seconds
+        self.setup_audio_mocks(bot_core, mock_tempdir, mock_whisper, [0] * 16000)  # 1 second
         
         with patch('bot_core.asyncio.to_thread') as mock_to_thread:
             mock_to_thread.return_value = {"text": "Short audio"}

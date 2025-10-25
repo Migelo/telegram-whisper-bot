@@ -180,7 +180,7 @@ class TestConfiguration:
     def test_constants_configuration(self):
         """Test that constants are properly configured."""
         # Test main.py constants
-        assert main.MAX_FILE_SIZE_MB == 2 * 1024 * 1024 * 1024  # 2GB
+        assert main.MAX_FILE_SIZE_MB == 128 * 1024 * 1024  # 128MB
         assert main.MAX_QUEUE_SIZE == 100
         
         # These should be configurable via environment
