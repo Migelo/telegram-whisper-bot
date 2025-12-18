@@ -10,7 +10,7 @@ WORKDIR /app
 RUN nix-channel --add https://nixos.org/channels/nixpkgs-unstable nixpkgs && \
     nix-channel --update
 
-COPY main.py /app/
+COPY main.py bot_core.py /app/
 
 # Use nix-shell to run python main.py as the entry point
 CMD ["nix-shell", "--run", "python main.py"]
